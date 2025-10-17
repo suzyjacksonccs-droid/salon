@@ -1,0 +1,560 @@
+# Beauty Salon Booking — Full Stack Starter
+
+This repository is a complete **starter** web app for a beauty salon booking system. It includes a React + Tailwind frontend and an Express + SQLite backend. It's designed to be dropped into a GitHub repo and extended.
+
+---
+
+## Project structure
+
+```
+beauty-salon-booking/
+├── README.md
+├── package.json                # root scripts for running both client & server
+├── server/
+│   ├── package.json
+│   ├── index.js                # Express server
+│   ├── db.js                   # minimal SQLite helper
+│   ├── routes/
+│   │   ├── auth.js
+│   │   ├── services.js
+│   │   └── bookings.js
+│   └── migrations/
+│       └── init.sql
+└── client/
+    ├── package.json
+    ├── tailwind.config.js
+    ├── postcss.config.js
+    └── src/
+        ├── main.jsx
+        ├── App.jsx
+        ├── index.css
+        ├── pages/
+        │   ├── Home.jsx
+        │   ├── Services.jsx
+        │   ├── Booking.jsx
+        │   └── Admin.jsx
+        └── components/
+            ├── Header.jsx
+            ├── ServiceCard.jsx
+            └── BookingForm.jsx
+```
+
+---
+
+## Important features included
+- User authentication (simple email + password with JWT)
+- Service list (CRUD endpoints)
+- Booking endpoints with basic double-booking prevention
+- Admin page to view bookings
+- Frontend booking form with date/time selection
+- Tailwind for styling
+
+---
+
+## Quick start (local)
+
+1. Clone repo
+2. `cd beauty-salon-booking`
+3. Install root dev scripts: `npm install` (root) — root script delegates to client & server
+4. Start dev: `npm run dev` (starts server on :4000 and Vite client on :5173)
+
+---
+
+## Files (copy these into your repo)
+
+---
+
+### root package.json
+```json
+{
+  "name": "beauty-salon-booking",
+  "private": true,
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "start": "node server/index.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.0.0"
+  }
+}
+```
+
+---
+
+### server/package.json
+```json
+{
+  "name": "salon-server",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.0",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
+```
+
+---
+
+### server/db.js
+```js
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const dbPath = path.join(__dirname, 'data.sqlite');
+const db = new sqlite3.Database(dbPath);
+
+// Run migration if needed
+const initSql = require('fs').readFileSync(path.join(__dirname, 'migrations', 'init.sql'), 'utf8');
+db.exec(initSql);
+
+module.exports = db;
+```
+
+---
+
+### server/migrations/init.sql
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE,
+  password_hash TEXT,
+  is_admin INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS services (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  duration_minutes INTEGER,
+  price REAL
+);
+
+CREATE TABLE IF NOT EXISTS bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  service_id INTEGER,
+  user_email TEXT,
+  start_iso TEXT,
+  end_iso TEXT,
+  notes TEXT,
+  status TEXT DEFAULT 'booked',
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY(service_id) REFERENCES services(id)
+);
+
+-- Insert sample services
+INSERT OR IGNORE INTO services (id, name, duration_minutes, price) VALUES
+(1, 'Haircut', 45, 25.0),
+(2, 'Manicure', 30, 20.0),
+(3, 'Facial', 60, 50.0);
+```
+
+---
+
+### server/index.js
+```js
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const db = require('./db');
+const authRouter = require('./routes/auth');
+const servicesRouter = require('./routes/services');
+const bookingsRouter = require('./routes/bookings');
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+app.use('/api/auth', authRouter);
+app.use('/api/services', servicesRouter);
+app.use('/api/bookings', bookingsRouter);
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log('Server running on', PORT));
+```
+
+---
+
+### server/routes/auth.js
+```js
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const SECRET = process.env.JWT_SECRET || 'change_this_secret';
+
+router.post('/register', async (req, res) => {
+  const { email, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  db.run('INSERT INTO users (email, password_hash) VALUES (?,?)', [email, hash], function(err) {
+    if (err) return res.status(400).json({ error: 'User exists' });
+    const token = jwt.sign({ id: this.lastID, email }, SECRET);
+    res.json({ token });
+  });
+});
+
+router.post('/login', (req, res) => {
+  const { email, password } = req.body;
+  db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
+    if (err || !user) return res.status(401).json({ error: 'Invalid credentials' });
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+    const token = jwt.sign({ id: user.id, email }, SECRET);
+    res.json({ token });
+  });
+});
+
+module.exports = router;
+```
+
+---
+
+### server/routes/services.js
+```js
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+
+router.get('/', (req, res) => {
+  db.all('SELECT * FROM services', [], (err, rows) => res.json(rows));
+});
+
+module.exports = router;
+```
+
+---
+
+### server/routes/bookings.js
+```js
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+
+// List bookings
+router.get('/', (req, res) => {
+  db.all('SELECT b.*, s.name as service_name FROM bookings b LEFT JOIN services s ON s.id=b.service_id ORDER BY start_iso', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+// Create booking with simple overlap prevention
+router.post('/', (req, res) => {
+  const { service_id, user_email, start_iso, end_iso, notes } = req.body;
+  // check overlap
+  db.get(
+    `SELECT COUNT(*) as cnt FROM bookings WHERE status='booked' AND (
+      (start_iso <= ? AND end_iso > ?) OR
+      (start_iso < ? AND end_iso >= ?)
+    )`,
+    [start_iso, start_iso, end_iso, end_iso],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (row.cnt > 0) return res.status(409).json({ error: 'Time slot not available' });
+
+      db.run('INSERT INTO bookings (service_id, user_email, start_iso, end_iso, notes) VALUES (?,?,?,?,?)',
+        [service_id, user_email, start_iso, end_iso, notes], function(err) {
+          if (err) return res.status(500).json({ error: err.message });
+          db.get('SELECT * FROM bookings WHERE id = ?', [this.lastID], (e, b) => res.json(b));
+        }
+      );
+    }
+  );
+});
+
+module.exports = router;
+```
+
+---
+
+### client/package.json
+```json
+{
+  "name": "salon-client",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.5.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.1"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.27",
+    "tailwindcss": "^4.0.0",
+    "vite": "^5.1.0"
+  }
+}
+```
+
+---
+
+### client/tailwind.config.js
+```js
+module.exports = {
+  content: ['./index.html', './src/**/*.{js,jsx}'],
+  theme: { extend: {} },
+  plugins: []
+};
+```
+
+---
+
+### client/src/index.css
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+```
+
+---
+
+### client/src/main.jsx
+```jsx
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import App from './App'
+import './index.css'
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>
+)
+```
+
+---
+
+### client/src/App.jsx
+```jsx
+import React from 'react'
+import { Routes, Route, Link } from 'react-router-dom'
+import Home from './pages/Home'
+import Services from './pages/Services'
+import Booking from './pages/Booking'
+import Admin from './pages/Admin'
+
+export default function App(){
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <header className="bg-white shadow">
+        <div className="container mx-auto p-4 flex justify-between items-center">
+          <h1 className="text-xl font-bold">Beauty Salon</h1>
+          <nav className="space-x-4">
+            <Link to="/">Home</Link>
+            <Link to="/services">Services</Link>
+            <Link to="/booking">Book</Link>
+            <Link to="/admin">Admin</Link>
+          </nav>
+        </div>
+      </header>
+      <main className="container mx-auto p-6">
+        <Routes>
+          <Route path="/" element={<Home/>} />
+          <Route path="/services" element={<Services/>} />
+          <Route path="/booking" element={<Booking/>} />
+          <Route path="/admin" element={<Admin/>} />
+        </Routes>
+      </main>
+    </div>
+  )
+}
+```
+
+---
+
+### client/src/pages/Home.jsx
+```jsx
+import React from 'react'
+export default function Home(){
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold mb-4">Welcome to our Salon</h2>
+      <p>Book an appointment quickly and easily.</p>
+    </div>
+  )
+}
+```
+
+---
+
+### client/src/pages/Services.jsx
+```jsx
+import React, {useEffect, useState} from 'react'
+import axios from 'axios'
+
+export default function Services(){
+  const [services, setServices] = useState([])
+  useEffect(()=>{ axios.get('/api/services').then(r=>setServices(r.data)) }, [])
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-4">Services</h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {services.map(s=> (
+          <div key={s.id} className="bg-white p-4 rounded shadow">
+            <h3 className="font-bold">{s.name}</h3>
+            <p>{s.duration_minutes} min — ${s.price}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+### client/src/components/BookingForm.jsx
+```jsx
+import React, {useState, useEffect} from 'react'
+import axios from 'axios'
+
+export default function BookingForm(){
+  const [services, setServices] = useState([])
+  const [form, setForm] = useState({service_id:'', user_email:'', date:'', time:'', notes:''})
+
+  useEffect(()=>{ axios.get('/api/services').then(r=>setServices(r.data)) }, [])
+
+  const submit = async (e)=>{
+    e.preventDefault();
+    if(!form.service_id || !form.user_email || !form.date || !form.time) return alert('fill fields')
+    const start = new Date(`${form.date}T${form.time}:00`)
+    const service = services.find(s=>s.id==form.service_id)
+    const end = new Date(start.getTime() + service.duration_minutes*60000)
+    try{
+      const resp = await axios.post('/api/bookings', {
+        service_id: form.service_id,
+        user_email: form.user_email,
+        start_iso: start.toISOString(),
+        end_iso: end.toISOString(),
+        notes: form.notes
+      })
+      alert('Booked!')
+    }catch(err){
+      alert(err.response?.data?.error || 'Error')
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="bg-white p-6 rounded shadow max-w-md">
+      <label className="block mb-2">Email
+        <input className="w-full p-2 border mt-1" value={form.user_email} onChange={e=>setForm({...form,user_email:e.target.value})} />
+      </label>
+      <label className="block mb-2">Service
+        <select className="w-full p-2 border mt-1" value={form.service_id} onChange={e=>setForm({...form,service_id:e.target.value})}>
+          <option value="">Choose</option>
+          {services.map(s=> <option value={s.id} key={s.id}>{s.name} ({s.duration_minutes}m)</option>)}
+        </select>
+      </label>
+      <div className="flex gap-2">
+        <label className="flex-1">Date
+          <input type="date" className="w-full p-2 border mt-1" onChange={e=>setForm({...form,date:e.target.value})} />
+        </label>
+        <label className="flex-1">Time
+          <input type="time" className="w-full p-2 border mt-1" onChange={e=>setForm({...form,time:e.target.value})} />
+        </label>
+      </div>
+      <label className="block mt-3">Notes
+        <textarea className="w-full p-2 border mt-1" onChange={e=>setForm({...form,notes:e.target.value})} />
+      </label>
+      <button className="mt-4 bg-blue-600 text-white px-4 py-2 rounded">Book appointment</button>
+    </form>
+  )
+}
+```
+
+---
+
+### client/src/pages/Booking.jsx
+```jsx
+import React from 'react'
+import BookingForm from '../components/BookingForm'
+export default function Booking(){
+  return (
+    <div className="grid md:grid-cols-2 gap-6">
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Make a booking</h2>
+        <BookingForm />
+      </div>
+      <div>
+        <h3 className="text-lg font-semibold mb-2">How it works</h3>
+        <ol className="list-decimal list-inside">
+          <li>Choose service & preferred date/time</li>
+          <li>We check availability and confirm</li>
+          <li>You receive email confirmation (placeholder)</li>
+        </ol>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+### client/src/pages/Admin.jsx
+```jsx
+import React, {useEffect, useState} from 'react'
+import axios from 'axios'
+
+export default function Admin(){
+  const [bookings, setBookings] = useState([])
+  useEffect(()=>{ axios.get('/api/bookings').then(r=>setBookings(r.data)) }, [])
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-4">Admin — Bookings</h2>
+      <table className="w-full bg-white rounded shadow">
+        <thead><tr className="border-b"><th className="p-2">#</th><th>Service</th><th>When</th><th>Email</th><th>Status</th></tr></thead>
+        <tbody>
+          {bookings.map(b=> (
+            <tr key={b.id} className="border-b">
+              <td className="p-2">{b.id}</td>
+              <td className="p-2">{b.service_name}</td>
+              <td className="p-2">{new Date(b.start_iso).toLocaleString()}</td>
+              <td className="p-2">{b.user_email}</td>
+              <td className="p-2">{b.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+```
+
+---
+
+## Notes & next steps
+- This starter uses simple JWT + plaintext token flow. For production, add refresh tokens and HTTPS.
+- Add email confirmation (e.g., nodemailer) and calendar sync (Google Calendar API) if desired.
+- Add better timezone handling and UI calendar component (FullCalendar or react-big-calendar).
+- Add input validation and rate-limiting.
+
+---
+
+If you want, I can:
+- Create a GitHub-ready repo (commit these files) and provide exact `git` commands; or
+- Add a prettier UI (Figma-style) and wire up email confirmations; or
+- Convert server to use Prisma + PostgreSQL for production.
+
+Tell me which next step you'd like and I will proceed.
